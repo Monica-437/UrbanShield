@@ -136,7 +136,9 @@ CRIME_IMGS = [
 ]
 
 crime_imgs_b64 = [get_b64(str(p)) for p in CRIME_IMGS]
-PREDEFINED_USERS = {"MONICA": "monica-4-3-7"}
+PREDEFINED_USERS = {
+    st.secrets["auth"]["username"]: st.secrets["auth"]["password"]
+}
 MONTH_ORDER = ['January','February','March','April','May','June',
                'July','August','September','October','November','December']
 
@@ -1206,39 +1208,92 @@ if st.session_state.page == "splash":
 # ══════════════════════════════════════════
 #  LOGIN
 # ══════════════════════════════════════════
+# ══════════════════════════════════════════
+#  LOGIN
+# ══════════════════════════════════════════
 if st.session_state.page == "login":
     inject_css(inner_bg, 0.64)
+
     st.markdown("""
     <div style='text-align:center;padding:44px 0 10px;'>
         <h1 style='font-size:54px !important;'>UrbanShield</h1>
         <p style='font-size:14px !important;color:rgba(0,200,255,0.7) !important;
             letter-spacing:3px;text-transform:uppercase;
             font-family:"Share Tech Mono",monospace !important;'>
-            Authorised Personnel Only</p>
-    </div>""", unsafe_allow_html=True)
-    _,c2,_ = st.columns([1,1.1,1])
+            Authorised Personnel Only
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _, c2, _ = st.columns([1, 1.1, 1])
+
     with c2:
-        st.markdown("""<div style='background:rgba(0,5,18,0.85);border:1px solid rgba(0,200,255,0.3);
-            border-radius:14px;padding:32px 36px;backdrop-filter:blur(22px);'>""", unsafe_allow_html=True)
-        st.markdown("<h3 style='text-align:center;color:#00C8FF !important;letter-spacing:2px;'>SECURE ACCESS</h3>",
-                    unsafe_allow_html=True)
-        u = st.text_input("Badge ID / Username", key="lu")
-        p = st.text_input("Password", type="password", key="lp")
+        st.markdown("""
+        <div style='background:rgba(0,5,18,0.85);
+            border:1px solid rgba(0,200,255,0.3);
+            border-radius:14px;
+            padding:32px 36px;
+            backdrop-filter:blur(22px);'>
+        """, unsafe_allow_html=True)
+
+        st.markdown(
+            "<h3 style='text-align:center;color:#00C8FF !important;"
+            "letter-spacing:2px;'>SECURE ACCESS</h3>",
+            unsafe_allow_html=True
+        )
+
+        u = st.text_input(
+            "Badge ID / Username",
+            key="lu"
+        )
+
+        p = st.text_input(
+            "Password",
+            type="password",
+            key="lp"
+        )
+
         st.markdown("<br>", unsafe_allow_html=True)
+
         if st.button("AUTHENTICATE", key="login_btn"):
-            if authenticate(u, p):
-                st.session_state.logged_in=True; st.session_state.username=u
+
+            # Normalize username so MONICA, Monica and monica
+            # are treated as the same username.
+            username = u.strip().upper()
+
+            if authenticate(username, p):
+
+                st.session_state.logged_in = True
+                st.session_state.username = username
+
                 st.session_state.g_result = run_analysis(
-                    st.session_state.g_crime, st.session_state.g_district,
-                    st.session_state.g_time,  st.session_state.g_weapon)
-                st.session_state.page="command"; st.rerun()
-            else: st.error("Invalid credentials.")
-        st.markdown("<p style='font-size:12px !important;color:#445 !important;"
-                    "text-align:center;margin-top:12px;'>"
-                    "Access restricted to authorised personnel only.</p>", unsafe_allow_html=True)
+                    st.session_state.g_crime,
+                    st.session_state.g_district,
+                    st.session_state.g_time,
+                    st.session_state.g_weapon
+                )
+
+                st.session_state.page = "command"
+                st.rerun()
+
+            else:
+                st.error("Invalid credentials.")
+
+        st.markdown(
+            "<p style='font-size:12px !important;color:#445 !important;"
+            "text-align:center;margin-top:12px;'>"
+            "Access restricted to authorised personnel only."
+            "</p>",
+            unsafe_allow_html=True
+        )
+
         st.markdown("</div>", unsafe_allow_html=True)
+
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Back", key="back"): st.session_state.page="splash"; st.rerun()
+
+        if st.button("Back", key="back"):
+            st.session_state.page = "splash"
+            st.rerun()
 
 # ══════════════════════════════════════════
 #  MAIN SHELL
