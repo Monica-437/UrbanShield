@@ -3,6 +3,8 @@ pandas
 numpy
 scikit-learn
 plotly
+folium
+streamlit-folium
 sqlalchemy
 pymysql
 python-dotenv
@@ -11,4 +13,3 @@ uvicorn
 pydantic
 requests
 mlxtend
-folium
