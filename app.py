@@ -116,23 +116,22 @@ def get_b64(fp):
             continue
     return ""
 
-splash_bg = get_b64(r"D:\chrome\download (5).jpeg")
-inner_bg  = get_b64(r"D:\chrome\Detective Scene.jpeg")
 
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 IMAGE_DIR = BASE_DIR / "assets" / "images"
+splash_bg = get_b64(str(IMAGE_DIR / "download (5).jpeg"))
+inner_bg = get_b64(str(IMAGE_DIR / "Detective Scene.jpeg"))
+
 
 CRIME_IMGS = [
-    IMAGE_DIR / "Detective Scene.jpeg",
-    IMAGE_DIR / "The Hidden World of Cybercrime_ The Dark Web.jpeg",
     IMAGE_DIR / "img1.jpeg",
+    IMAGE_DIR / "The Hidden World of Cybercrime_ The Dark Web.jpeg",
+    IMAGE_DIR / "img2.jpeg",
     IMAGE_DIR / "thieves tried to steal the store’s cash.jpeg",
     IMAGE_DIR / "img5.jpeg",
     IMAGE_DIR / "img6.jpeg",
-    IMAGE_DIR / "img2.jpeg",
-    IMAGE_DIR / "download (5).jpeg",
 ]
 
 crime_imgs_b64 = [get_b64(str(p)) for p in CRIME_IMGS]
