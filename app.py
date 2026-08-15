@@ -24,6 +24,7 @@ previous frontend file without deleting its existing dashboard work.
 """
 
 import streamlit as st
+from pathlib import Path
 import pandas as pd
 import database as db
 import numpy as np
@@ -118,18 +119,23 @@ def get_b64(fp):
 splash_bg = get_b64(r"D:\chrome\download (5).jpeg")
 inner_bg  = get_b64(r"D:\chrome\Detective Scene.jpeg")
 
-CRIME_IMGS = [
-    r"D:\chrome\In a hidden corner of the world, a small hea. 🌙🧸💔 #HiddenPain #BrokenLove #FragileSouls#DigitalArt #ArtisticExpression #EmotionalArt #RealisticArt #ArtInspo #ArtCommunity #InstaArt #CreativeArt #DigitalIllustration #ArtOfInstagram",
-    r"D:\chrome\The Hidden World of Cybercrime_ The Dark Web.jpeg",
-    r"D:\chrome\Dark Addiction Art – Man Battling Demons of Alcoholism in Isolation _ Recovery Awareness Image.jpeg",
-    r"D:\chrome\thieves tried to steal the store's cash.jpeg",
-    r"D:\chrome\https___www_nationpress.com_national_kolkata-law-student-rape-case-planned-attack__Was the Rape and its Video Recording Pre-Planned_ Investigators Uncover Shocking Details in Bengal Law College Case",
-    r"D:\chrome\Car Park & Vehicle Crime __🚗 Vehicle break-ins and catalytic converter theft continue to rise across Bristol__Car parks and loading bays are soft targets—unless they're protected. __Try__✔ ANPR cameras_✔ Smart lighting_✔ Random .uk_",
-    r"D:\chrome\Cel puțin 11 persoane au fost înjunghiate sâmbătă în fața unui supermarket din Michigan, în nordu___.jpeg",
-    r"C:\Users\gokul\OneDrive\Pictures\Screenshots\Screenshot 2026-04-16 224859.png",
-]
-crime_imgs_b64 = [get_b64(p) for p in CRIME_IMGS]
+from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = BASE_DIR / "assets" / "images"
+
+CRIME_IMGS = [
+    IMAGE_DIR / "Detective Scene.jpeg",
+    IMAGE_DIR / "The Hidden World of Cybercrime_ The Dark Web.jpeg",
+    IMAGE_DIR / "img1.jpeg",
+    IMAGE_DIR / "thieves tried to steal the store’s cash.jpeg",
+    IMAGE_DIR / "img5.jpeg",
+    IMAGE_DIR / "img6.jpeg",
+    IMAGE_DIR / "img2.jpeg",
+    IMAGE_DIR / "download (5).jpeg",
+]
+
+crime_imgs_b64 = [get_b64(str(p)) for p in CRIME_IMGS]
 PREDEFINED_USERS = {"MONICA": "monica-4-3-7"}
 MONTH_ORDER = ['January','February','March','April','May','June',
                'July','August','September','October','November','December']
