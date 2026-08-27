@@ -1704,7 +1704,7 @@ if st.session_state.page == "map":
             m = folium.Map(
                 location=[center_lat, center_lon],
                 zoom_start=12,
-                tiles="CartoDB dark_matter",
+                tiles="OpenStreetMap",
                 control_scale=True
             )
 
@@ -1893,7 +1893,7 @@ if st.session_state.page == "map":
                     center_lon
                 ],
                 zoom_start=11,
-                tiles="CartoDB dark_matter",
+                tiles="OpenStreetMap",
                 control_scale=True
             )
 
@@ -2163,7 +2163,7 @@ if st.session_state.page == "map":
                         center_lon
                     ],
                     zoom_start=11,
-                    tiles="CartoDB dark_matter",
+                    tiles="OpenStreetMap",
                     control_scale=True
                 )
 
