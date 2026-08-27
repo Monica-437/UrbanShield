@@ -22,6 +22,8 @@ All MySQL connection details come from environment variables.
 """
 
 import os
+import uuid
+import pandas as pd
 import datetime
 import contextlib
 
@@ -590,6 +592,104 @@ def init_db():
     Base.metadata.create_all(
         bind=engine
     )
+# ============================================================
+# PIPELINE DATABASE HELPERS
+# ============================================================
+
+def insert_incident(record):
+    """Insert one incoming incident."""
+    with get_session() as session:
+        incident = Incident(**record)
+        session.add(incident)
+        session.flush()
+        session.refresh(incident)
+        return incident
+
+
+def fetch_incidents(limit=2000):
+    """Fetch recent incidents for dynamic analysis."""
+    with get_session() as session:
+        rows = (
+            session.query(Incident)
+            .filter(Incident.source != "historical")
+            .order_by(Incident.submitted_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        result = []
+
+        for row in rows:
+            result.append({
+                "incident_id": row.incident_id,
+                "crime_type": row.crime_type,
+                "crime_category": row.crime_category,
+                "crime_severity": row.crime_severity,
+                "occurred_date": row.occurred_date,
+                "occurred_time": row.occurred_time,
+                "district": row.district,
+                "neighborhood": row.neighborhood,
+                "latitude": row.latitude,
+                "longitude": row.longitude,
+                "in_coverage": row.in_coverage,
+                "weapon_used": row.weapon_used,
+                "domestic_related": row.domestic_related,
+                "gang_related": row.gang_related,
+                "property_damage": row.property_damage,
+                "estimated_loss": row.estimated_loss,
+                "priority_level": row.priority_level,
+                "source": row.source,
+                "status": row.status,
+                "submitted_at": row.submitted_at,
+            })
+
+        return result
+
+
+def insert_risk_assessment(record):
+    """Store one risk assessment."""
+    with get_session() as session:
+        assessment = RiskAssessment(
+            assessment_id=(
+                "ASM-"
+                + uuid.uuid4().hex[:12].upper()
+            ),
+            incident_id=record["incident_id"],
+            historical_risk=record["historical_risk"],
+            dynamic_risk=record["dynamic_risk"],
+            risk_level=record["risk_level"],
+            reasons=record["reasons"],
+            anomaly_flag=record.get("anomaly_flag", False),
+            anomaly_score=record.get("anomaly_score"),
+        )
+
+        session.add(assessment)
+        session.flush()
+        session.refresh(assessment)
+        return assessment
+
+
+def insert_alert(record):
+    """Store one generated alert."""
+    with get_session() as session:
+        alert = Alert(
+            alert_id=(
+                "ALT-"
+                + uuid.uuid4().hex[:12].upper()
+            ),
+            incident_id=record.get("incident_id"),
+            location=record.get("location"),
+            alert_type=record.get("alert_type"),
+            risk_level=record.get("risk_level"),
+            message=record.get("message"),
+            recommendation=record.get("recommendation"),
+            status=record.get("status", "Open"),
+        )
+
+        session.add(alert)
+        session.flush()
+        session.refresh(alert)
+        return alert.alert_id
 
 
 # ============================================================
@@ -670,3 +770,81 @@ def database_url() -> str:
         )
 
     return DATABASE_URL
+def import_historical_data(csv_path):
+    """Import the existing 5,000 crime records as historical incidents."""
+
+    df = pd.read_csv(csv_path)
+
+    with get_session() as session:
+
+        existing = (
+            session.query(Incident)
+            .filter(Incident.source == "historical")
+            .count()
+        )
+
+        if existing > 0:
+            return existing
+
+        imported = 0
+
+        for index, row in df.iterrows():
+
+            def val(column, default=None):
+                value = row.get(column, default)
+
+                if pd.isna(value):
+                    return default
+
+                return value
+
+            incident = Incident(
+                incident_id=str(
+                    val("incident_id", f"HIST-{index + 1:05d}")
+                ),
+
+                crime_type=str(
+                    val("crime_type", "Unknown")
+                ),
+
+                crime_category=val("crime_category"),
+
+                crime_severity=val("crime_severity"),
+
+                occurred_date=val("occurred_date"),
+
+                occurred_time=val("occurred_time"),
+
+                district=val("district"),
+
+                neighborhood=val("neighborhood"),
+
+                latitude=val("latitude"),
+
+                longitude=val("longitude"),
+
+                in_coverage=True,
+
+                weapon_used=val("weapon_used"),
+
+                domestic_related=val("domestic_related"),
+
+                gang_related=val("gang_related"),
+
+                property_damage=val("property_damage"),
+
+                estimated_loss=val("estimated_loss"),
+
+                priority_level=val("priority_level"),
+
+                source="historical",
+
+                status="Historical"
+            )
+
+            session.add(incident)
+            imported += 1
+
+        session.flush()
+
+        return imported

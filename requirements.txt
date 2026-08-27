@@ -13,3 +13,6 @@ uvicorn
 pydantic
 requests
 mlxtend
+fastapi
+uvicorn
+pydantic

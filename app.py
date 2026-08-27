@@ -70,6 +70,9 @@ MLXTEND_OK = False
 # DATABASE INITIALIZATION
 # ══════════════════════════════════════════
 db.init_db()
+HISTORICAL_CSV = "data/crime_analysis_final_v4.csv"
+
+db.import_historical_data(HISTORICAL_CSV)
 
 # ══════════════════════════════════════════
 #  CONFIG
@@ -724,17 +727,15 @@ def _historical_area_scores():
 
 
 def _resource_allocation(total_units=10):
-    """Decision-support allocation for a fixed pool of patrol units.
+    """Generate risk-based resource allocation recommendations."""
 
-    This is a recommendation only. It does not automatically dispatch units.
-    The allocation is derived from historical district risk plus recent
-    incoming-incident activity.
-    """
     base = _historical_area_scores()
+
     if base.empty:
         return pd.DataFrame()
 
     recent = _fetch_recent_live_incidents(limit=2000)
+
     recent_counts = (
         recent.groupby("district").size()
         if not recent.empty and "district" in recent.columns
@@ -742,59 +743,80 @@ def _resource_allocation(total_units=10):
     )
 
     rows = []
+
     for _, r in base.iterrows():
         district = r["district"]
+
         hist = float(r.get("historical_risk", 0) or 0)
         incoming = float(recent_counts.get(district, 0))
+
+        # Combine historical risk with recent incident activity
         score = hist + min(incoming * 2.0, 20.0)
+
+        if score >= 75:
+            risk = "CRITICAL"
+        elif score >= 55:
+            risk = "HIGH"
+        elif score >= 35:
+            risk = "MODERATE"
+        else:
+            risk = "LOW"
+
         rows.append({
             "Zone": district,
             "Risk Score": round(score, 1),
-            "Risk": (
-                "CRITICAL" if score >= 75 else
-                "HIGH" if score >= 55 else
-                "MODERATE" if score >= 35 else
-                "LOW"
-            ),
+            "Risk": risk,
             "Incoming Incidents": int(incoming),
         })
 
-    alloc = pd.DataFrame(rows).sort_values(
-        ["Risk Score", "Incoming Incidents"], ascending=False
-    ).reset_index(drop=True)
+    alloc = pd.DataFrame(rows)
 
     if alloc.empty:
         return alloc
 
-    # Start with one unit per area, then distribute remaining units by score.
+    # Highest-risk areas come first
+    alloc = alloc.sort_values(
+        ["Risk Score", "Incoming Incidents"],
+        ascending=False
+    ).reset_index(drop=True)
+
     n = len(alloc)
-    units = [1] * n
-    remaining = max(0, int(total_units) - n)
+    total_units = max(0, int(total_units))
 
-    for idx in alloc.index:
-        if remaining <= 0:
-            break
-        # Highest-risk zones receive extra units first.
-        extra = min(
-            remaining,
-            max(0, int(round(float(alloc.loc[idx, "Risk Score"]) / 25)) - 1)
-        )
-        units[idx] += extra
-        remaining -= extra
+    # Start with zero units
+    units = [0] * n
 
-    # If units remain, distribute one-by-one from highest to lowest score.
-    idx_pos = 0
-    while remaining > 0 and n > 0:
-        units[alloc.index[idx_pos % n]] += 1
-        remaining -= 1
-        idx_pos += 1
+    if total_units > 0:
+
+        # Give one unit to each highest-priority area
+        # until the available pool is exhausted.
+        first_round = min(total_units, n)
+
+        for i in range(first_round):
+            units[i] = 1
+
+        remaining = total_units - first_round
+
+        # Distribute remaining units to the highest-risk areas
+        # using their relative risk scores.
+        if remaining > 0:
+            scores = alloc["Risk Score"].clip(lower=1)
+
+            for _ in range(remaining):
+                priority_index = max(
+                    range(n),
+                    key=lambda i: scores.iloc[i] / (units[i] + 1)
+                )
+                units[priority_index] += 1
 
     alloc["Recommended Units"] = units
-    alloc["Decision Support Note"] = (
-        "Recommended priority only — an authorized decision-maker must approve deployment."
-    )
-    return alloc
 
+    alloc["Decision Support Note"] = (
+        "Recommended priority only — an authorized "
+        "decision-maker must approve deployment."
+    )
+
+    return alloc
 
 def _render_live_result(result):
     """Render the result of the most recent incoming incident."""
@@ -1611,142 +1633,629 @@ if st.session_state.page == "command":
 #  PAGE 2 — CRIME LOCATION MAP
 # ══════════════════════════════════════════
 if st.session_state.page == "map":
+
     st.markdown("<h2>Crime Location Map</h2>", unsafe_allow_html=True)
-    filter_tag(R["crime"],R["district"],R["time"],R["similar_count"])
+    filter_tag(R["crime"], R["district"], R["time"], R["similar_count"])
 
-    fc1,fc2 = st.columns(2)
-    with fc1: show_all  = st.checkbox("Show all crime types — this district", value=False)
-    with fc2: show_city = st.checkbox("City-wide view", value=False)
+    fc1, fc2 = st.columns(2)
 
-    if show_city:     mdf=df.copy()
-    elif show_all:    mdf=R["city_dist"].copy()
-    else:             mdf=R["fdf"].copy()
-    mdf = mdf.dropna(subset=["latitude","longitude"])
-    st.markdown(f"<p style='font-size:14px !important;color:#aaa !important;'>"
-                f"Displaying <b style='color:#00C8FF !important;'>{len(mdf):,}</b> incidents "
-                f"matching current filter.</p>", unsafe_allow_html=True)
+    with fc1:
+        show_all = st.checkbox(
+            "Show all crime types — this district",
+            value=False
+        )
 
-    t1,t2,t3,t4 = st.tabs(["High-Risk Crime Zones","District Priority Levels",
-                             "Crime Density Areas","Concentrated Crime Regions"])
+    with fc2:
+        show_city = st.checkbox(
+            "City-wide view",
+            value=False
+        )
 
+    # ──────────────────────────────────────
+    # SELECT DATA FOR MAP
+    # ──────────────────────────────────────
+    if show_city:
+        mdf = df.copy()
+    elif show_all:
+        mdf = R["city_dist"].copy()
+    else:
+        mdf = R["fdf"].copy()
+
+    # Keep only valid coordinates
+    mdf = mdf.dropna(subset=["latitude", "longitude"]).copy()
+
+    st.markdown(
+        f"""
+        <p style='font-size:14px !important;color:#aaa !important;'>
+            Displaying
+            <b style='color:#00C8FF !important;'>{len(mdf):,}</b>
+            incidents matching current filter.
+        </p>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # ──────────────────────────────────────
+    # TABS
+    # ──────────────────────────────────────
+    t1, t2, t3, t4 = st.tabs([
+        "High-Risk Crime Zones",
+        "District Priority Levels",
+        "Crime Density Areas",
+        "Concentrated Crime Regions"
+    ])
+
+    # ══════════════════════════════════════
+    # TAB 1 — HIGH-RISK CRIME ZONES
+    # ══════════════════════════════════════
     with t1:
-        if len(mdf)>0:
-            m = folium.Map(location=[mdf["latitude"].mean(),mdf["longitude"].mean()],
-                           zoom_start=12, tiles="CartoDB dark_matter")
-            HeatMap([[r["latitude"],r["longitude"]] for _,r in mdf.iterrows()],
-                    radius=14, blur=17, min_opacity=0.42).add_to(m)
-            for _,row in mdf.sample(min(600,len(mdf)),random_state=42).iterrows():
-                folium.CircleMarker(location=[row["latitude"],row["longitude"]],radius=4,
-                    color="#E24B4A",fill=True,fill_opacity=0.65,weight=1,
-                    popup=folium.Popup(f"<b>{row['crime_type']}</b><br>{row['district']}<br>{row['time_category']}",
-                                       max_width=180)).add_to(m)
-            st_folium(m, width=None, height=520, returned_objects=[])
-            top_zone = mdf["district"].mode()[0] if "district" in mdf.columns else R["district"]
-            insight(f"Highest incident density in <b>{top_zone}</b>. "
-                    f"<b>{len(mdf):,} incidents</b> plotted in this view.")
-        else: st.warning("No incidents match current filters.")
 
-    with t2:
-        q6 = df.groupby(["district","priority_level"]).size().reset_index(name="Incidents")
-        fig = px.bar(q6,x="district",y="Incidents",color="priority_level",barmode="group",
-                     title="Response Priority Distribution by District",
-                     color_discrete_map={"High":"#E24B4A","Medium":"#EF9F27","Low":"#1D9E75"})
-        fig.update_layout(**pcfg(320)); st.plotly_chart(fig,use_container_width=True)
-        dist_high = q6[q6["priority_level"]=="High"].set_index("district")["Incidents"]
-        if len(dist_high)>0:
-            insight(auto_conclude(dist_high,"crime_by_district"))
+        if len(mdf) > 0:
 
-    with t3:
-        sec("Crime Density Analysis")
-        zone_df = df.dropna(subset=["latitude","longitude","zone_cluster"]).copy()
-        zone_df = zone_df[zone_df["zone_cluster"]>=0]
-        zone_sel = st.selectbox("Filter by crime type",
-                                ["All"]+sorted(df["crime_type"].unique().tolist()),
-                                key="km_sel")
-        zone_plot = zone_df if zone_sel=="All" else zone_df[zone_df["crime_type"]==zone_sel]
+            # Calculate center from ACTUAL crime coordinates
+            center_lat = mdf["latitude"].mean()
+            center_lon = mdf["longitude"].mean()
 
-        if len(zone_plot)>0:
-            fig_km = px.scatter_mapbox(
-                zone_plot.sample(min(800,len(zone_plot)), random_state=42),
-                lat="latitude", lon="longitude",
-                color="zone_cluster",
-                color_continuous_scale="Turbo",
-                zoom=11, height=480,
-                title=f"Crime Density Areas — {zone_sel}",
-                hover_data={"crime_type":True,"district":True,"zone_cluster":True}
+            # Safety check for invalid values
+            if not np.isfinite(center_lat) or not np.isfinite(center_lon):
+                center_lat = df["latitude"].median()
+                center_lon = df["longitude"].median()
+
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=12,
+                tiles="CartoDB dark_matter",
+                control_scale=True
             )
-            fig_km.update_layout(mapbox_style="carto-darkmatter",
-                                  paper_bgcolor="rgba(0,0,0,0)",
-                                  font_color="white", margin={"t":36,"b":0,"l":0,"r":0})
-            st.plotly_chart(fig_km, use_container_width=True)
 
-            zone_summary = zone_plot.groupby("zone_cluster").agg(
-                Incidents=("crime_type","count"),
-                Top_Crime=("crime_type", lambda x: x.mode()[0]),
-                Avg_Severity=("crime_severity_enc","mean")
-            ).reset_index().sort_values("Incidents", ascending=False)
-            zone_summary = zone_summary.rename(columns={
-                "zone_cluster":"Zone","Top_Crime":"Dominant Crime","Avg_Severity":"Avg Severity"})
-            st.dataframe(zone_summary, use_container_width=True, hide_index=True)
-            top_z = zone_summary.iloc[0]
-            insight(f"<b>Zone {int(top_z['Zone'])}</b> has the highest crime density with "
-                    f"<b>{int(top_z['Incidents'])}</b> incidents. Dominant crime: "
-                    f"<b>{top_z['Dominant Crime']}</b>. Permanent patrol post recommended.", "warn")
+            # ──────────────────────────────
+            # HEATMAP
+            # ──────────────────────────────
+            heat_data = [
+                [row["latitude"], row["longitude"]]
+                for _, row in mdf.iterrows()
+            ]
+
+            HeatMap(
+                heat_data,
+                radius=14,
+                blur=17,
+                min_opacity=0.42
+            ).add_to(m)
+
+            # ──────────────────────────────
+            # INCIDENT MARKERS
+            # ──────────────────────────────
+            sample_df = mdf.sample(
+                min(600, len(mdf)),
+                random_state=42
+            )
+
+            for _, row in sample_df.iterrows():
+
+                popup_text = (
+                    f"<b>{row['crime_type']}</b><br>"
+                    f"District: {row['district']}<br>"
+                    f"Time: {row['time_category']}"
+                )
+
+                folium.CircleMarker(
+                    location=[
+                        row["latitude"],
+                        row["longitude"]
+                    ],
+                    radius=4,
+                    color="#E24B4A",
+                    fill=True,
+                    fill_color="#E24B4A",
+                    fill_opacity=0.65,
+                    weight=1,
+                    popup=folium.Popup(
+                        popup_text,
+                        max_width=200
+                    )
+                ).add_to(m)
+
+            # ──────────────────────────────
+            # DISPLAY MAP
+            # ──────────────────────────────
+            st_folium(
+                m,
+                width=None,
+                height=520,
+                returned_objects=[]
+            )
+
+            # ──────────────────────────────
+            # INSIGHT
+            # ──────────────────────────────
+            if "district" in mdf.columns and len(mdf) > 0:
+
+                top_zone = mdf["district"].mode()[0]
+
+                insight(
+                    f"Highest incident density in "
+                    f"<b>{top_zone}</b>. "
+                    f"<b>{len(mdf):,} incidents</b> plotted "
+                    f"in this view."
+                )
+
         else:
-            st.info("No data for selected filter.")
+            st.warning(
+                "No incidents match current filters."
+            )
 
+    # ══════════════════════════════════════
+    # TAB 2 — DISTRICT PRIORITY LEVELS
+    # ══════════════════════════════════════
+    with t2:
+
+        q6 = (
+            df.groupby(
+                ["district", "priority_level"]
+            )
+            .size()
+            .reset_index(name="Incidents")
+        )
+
+        fig = px.bar(
+            q6,
+            x="district",
+            y="Incidents",
+            color="priority_level",
+            barmode="group",
+            title="Response Priority Distribution by District",
+            color_discrete_map={
+                "High": "#E24B4A",
+                "Medium": "#EF9F27",
+                "Low": "#1D9E75"
+            }
+        )
+
+        fig.update_layout(**pcfg(320))
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
+
+        dist_high = (
+            q6[
+                q6["priority_level"] == "High"
+            ]
+            .set_index("district")["Incidents"]
+        )
+
+        if len(dist_high) > 0:
+            insight(
+                auto_conclude(
+                    dist_high,
+                    "crime_by_district"
+                )
+            )
+
+    # ══════════════════════════════════════
+    # TAB 3 — CRIME DENSITY AREAS
+    # ══════════════════════════════════════
+    with t3:
+
+        sec("Crime Density Analysis")
+
+        zone_df = (
+            df.dropna(
+                subset=[
+                    "latitude",
+                    "longitude",
+                    "zone_cluster"
+                ]
+            )
+            .copy()
+        )
+
+        zone_df = zone_df[
+            zone_df["zone_cluster"] >= 0
+        ]
+
+        zone_sel = st.selectbox(
+            "Filter by crime type",
+            ["All"] +
+            sorted(
+                df["crime_type"]
+                .dropna()
+                .unique()
+                .tolist()
+            ),
+            key="km_sel"
+        )
+
+        if zone_sel == "All":
+            zone_plot = zone_df
+        else:
+            zone_plot = zone_df[
+                zone_df["crime_type"] == zone_sel
+            ]
+
+        if len(zone_plot) > 0:
+
+            # ──────────────────────────────
+            # CALCULATE ACTUAL MAP CENTER
+            # ──────────────────────────────
+            center_lat = zone_plot["latitude"].mean()
+            center_lon = zone_plot["longitude"].mean()
+
+            # ──────────────────────────────
+            # FOLIUM MAP
+            # No Mapbox API key required
+            # ──────────────────────────────
+            km_map = folium.Map(
+                location=[
+                    center_lat,
+                    center_lon
+                ],
+                zoom_start=11,
+                tiles="CartoDB dark_matter",
+                control_scale=True
+            )
+
+            plot_sample = zone_plot.sample(
+                min(800, len(zone_plot)),
+                random_state=42
+            )
+
+            # ──────────────────────────────
+            # ZONE MARKERS
+            # ──────────────────────────────
+            for _, row in plot_sample.iterrows():
+
+                popup_text = (
+                    f"<b>{row['crime_type']}</b><br>"
+                    f"District: {row['district']}<br>"
+                    f"Zone: {row['zone_cluster']}"
+                )
+
+                folium.CircleMarker(
+                    location=[
+                        row["latitude"],
+                        row["longitude"]
+                    ],
+                    radius=5,
+                    color="#00C8FF",
+                    fill=True,
+                    fill_color="#00C8FF",
+                    fill_opacity=0.65,
+                    weight=1,
+                    popup=folium.Popup(
+                        popup_text,
+                        max_width=220
+                    )
+                ).add_to(km_map)
+
+            st_folium(
+                km_map,
+                width=None,
+                height=480,
+                returned_objects=[]
+            )
+
+            # ──────────────────────────────
+            # ZONE SUMMARY
+            # ──────────────────────────────
+            zone_summary = (
+                zone_plot
+                .groupby("zone_cluster")
+                .agg(
+                    Incidents=("crime_type", "count"),
+                    Top_Crime=(
+                        "crime_type",
+                        lambda x: x.mode()[0]
+                    ),
+                    Avg_Severity=(
+                        "crime_severity_enc",
+                        "mean"
+                    )
+                )
+                .reset_index()
+                .sort_values(
+                    "Incidents",
+                    ascending=False
+                )
+            )
+
+            zone_summary = zone_summary.rename(
+                columns={
+                    "zone_cluster": "Zone",
+                    "Top_Crime": "Dominant Crime",
+                    "Avg_Severity": "Avg Severity"
+                }
+            )
+
+            st.dataframe(
+                zone_summary,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # ──────────────────────────────
+            # TOP ZONE INSIGHT
+            # ──────────────────────────────
+            top_z = zone_summary.iloc[0]
+
+            insight(
+                f"<b>Zone {int(top_z['Zone'])}</b> "
+                f"has the highest crime density with "
+                f"<b>{int(top_z['Incidents'])}</b> incidents. "
+                f"Dominant crime: "
+                f"<b>{top_z['Dominant Crime']}</b>. "
+                f"Permanent patrol post recommended.",
+                "warn"
+            )
+
+        else:
+
+            st.info(
+                "No data for selected filter."
+            )
+
+    # ══════════════════════════════════════
+    # TAB 4 — CONCENTRATED CRIME REGIONS
+    # ══════════════════════════════════════
     with t4:
+
         sec("Areas with High Incident Concentration")
-        db_crime_sel = st.selectbox("Select crime type",
-                                    sorted(df["crime_type"].unique().tolist()),
-                                    index=sorted(df["crime_type"].unique().tolist()).index(R["crime"])
-                                    if R["crime"] in df["crime_type"].unique() else 0,
-                                    key="dbscan_sel")
-        db_eps = st.slider("Detection sensitivity (radius)", 0.002, 0.05, 0.01, 0.001, key="dbscan_eps")
-        db_df  = df[df["crime_type"]==db_crime_sel].dropna(subset=["latitude","longitude"]).copy()
+
+        crime_types = sorted(
+            df["crime_type"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+        db_crime_sel = st.selectbox(
+            "Select crime type",
+            crime_types,
+            index=(
+                crime_types.index(R["crime"])
+                if R["crime"] in crime_types
+                else 0
+            ),
+            key="dbscan_sel"
+        )
+
+        # ──────────────────────────────────
+        # RADIUS IN KM
+        # ──────────────────────────────────
+        db_radius_km = st.slider(
+            "Detection sensitivity (radius)",
+            0.2,
+            5.0,
+            1.0,
+            0.1,
+            key="dbscan_radius"
+        )
+
+        # Convert kilometers → radians
+        # because DBSCAN + haversine expects radians
+        EARTH_RADIUS_KM = 6371.0
+
+        db_eps = (
+            db_radius_km /
+            EARTH_RADIUS_KM
+        )
+
+        db_df = (
+            df[
+                df["crime_type"] == db_crime_sel
+            ]
+            .dropna(
+                subset=[
+                    "latitude",
+                    "longitude"
+                ]
+            )
+            .copy()
+        )
 
         if len(db_df) >= 10:
-            coords = db_df[["latitude","longitude"]].values
-            db_model = DBSCAN(eps=db_eps, min_samples=5, algorithm='ball_tree', metric='haversine')
-            db_df["_area_id"] = db_model.fit_predict(np.radians(coords))
 
-            n_clusters = len(set(db_df["_area_id"])) - (1 if -1 in db_df["_area_id"].values else 0)
-            n_noise    = (db_df["_area_id"]==-1).sum()
+            coords = db_df[
+                ["latitude", "longitude"]
+            ].values
 
-            c1_,c2_ = st.columns(2)
-            with c1_:
-                st.markdown(f"<div class='mcard'><span class='mcard-num'>{n_clusters}</span>"
-                            f"<span class='mcard-lbl'>High-Concentration Areas Found</span></div>", unsafe_allow_html=True)
-            with c2_:
-                st.markdown(f"<div class='mcard'><span class='mcard-num'>{n_noise}</span>"
-                            f"<span class='mcard-lbl'>Isolated Incidents</span></div>", unsafe_allow_html=True)
+            # ──────────────────────────────
+            # DBSCAN
+            # ──────────────────────────────
+            db_model = DBSCAN(
+                eps=db_eps,
+                min_samples=5,
+                algorithm="ball_tree",
+                metric="haversine"
+            )
 
-            db_plot = db_df[db_df["_area_id"]>=0].copy()
-            db_plot["area_label"] = "Area " + db_plot["_area_id"].astype(str)
-            if len(db_plot)>0:
-                fig_db = px.scatter_mapbox(
-                    db_plot.sample(min(600,len(db_plot)), random_state=42),
-                    lat="latitude", lon="longitude",
-                    color="area_label",
-                    zoom=11, height=460,
-                    title=f"High-Concentration Crime Areas — {db_crime_sel}",
-                    hover_data={"district":True,"time_category":True}
+            db_df["_area_id"] = (
+                db_model.fit_predict(
+                    np.radians(coords)
                 )
-                fig_db.update_layout(mapbox_style="carto-darkmatter",
-                                      paper_bgcolor="rgba(0,0,0,0)",
-                                      font_color="white", margin={"t":36,"b":0,"l":0,"r":0})
-                st.plotly_chart(fig_db, use_container_width=True)
+            )
 
-                area_counts = db_plot.groupby("_area_id").size()
+            n_clusters = (
+                len(
+                    set(
+                        db_df["_area_id"]
+                    )
+                )
+                -
+                (
+                    1
+                    if -1 in db_df["_area_id"].values
+                    else 0
+                )
+            )
+
+            n_noise = (
+                db_df["_area_id"] == -1
+            ).sum()
+
+            # ──────────────────────────────
+            # METRICS
+            # ──────────────────────────────
+            c1_, c2_ = st.columns(2)
+
+            with c1_:
+
+                st.markdown(
+                    f"""
+                    <div class='mcard'>
+                        <span class='mcard-num'>
+                            {n_clusters}
+                        </span>
+                        <span class='mcard-lbl'>
+                            High-Concentration Areas Found
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with c2_:
+
+                st.markdown(
+                    f"""
+                    <div class='mcard'>
+                        <span class='mcard-num'>
+                            {n_noise}
+                        </span>
+                        <span class='mcard-lbl'>
+                            Isolated Incidents
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            # ──────────────────────────────
+            # DENSE AREAS ONLY
+            # ──────────────────────────────
+            db_plot = db_df[
+                db_df["_area_id"] >= 0
+            ].copy()
+
+            db_plot["area_label"] = (
+                "Area " +
+                db_plot["_area_id"].astype(str)
+            )
+
+            if len(db_plot) > 0:
+
+                # ──────────────────────────
+                # ACTUAL MAP CENTER
+                # ──────────────────────────
+                center_lat = (
+                    db_plot["latitude"].mean()
+                )
+
+                center_lon = (
+                    db_plot["longitude"].mean()
+                )
+
+                db_map = folium.Map(
+                    location=[
+                        center_lat,
+                        center_lon
+                    ],
+                    zoom_start=11,
+                    tiles="CartoDB dark_matter",
+                    control_scale=True
+                )
+
+                plot_db_sample = db_plot.sample(
+                    min(600, len(db_plot)),
+                    random_state=42
+                )
+
+                # ──────────────────────────
+                # CLUSTER MARKERS
+                # ──────────────────────────
+                for _, row in plot_db_sample.iterrows():
+
+                    popup_text = (
+                        f"<b>{row['crime_type']}</b><br>"
+                        f"District: {row['district']}<br>"
+                        f"Time: {row['time_category']}<br>"
+                        f"Concentration: "
+                        f"{row['area_label']}"
+                    )
+
+                    folium.CircleMarker(
+                        location=[
+                            row["latitude"],
+                            row["longitude"]
+                        ],
+                        radius=5,
+                        color="#FF4B4B",
+                        fill=True,
+                        fill_color="#FF4B4B",
+                        fill_opacity=0.70,
+                        weight=1,
+                        popup=folium.Popup(
+                            popup_text,
+                            max_width=230
+                        )
+                    ).add_to(db_map)
+
+                st_folium(
+                    db_map,
+                    width=None,
+                    height=460,
+                    returned_objects=[]
+                )
+
+                # ──────────────────────────
+                # TOP HOTSPOT
+                # ──────────────────────────
+                area_counts = (
+                    db_plot
+                    .groupby("_area_id")
+                    .size()
+                )
+
                 top_h = area_counts.idxmax()
-                top_h_dist = db_plot[db_plot["_area_id"]==top_h]["district"].mode()[0]
-                insight(auto_conclude(None,"hotspot",
-                        {"zone":top_h,"district":top_h_dist,"count":int(area_counts[top_h])}), "red")
-            else:
-                st.info("No dense areas found with current sensitivity — try increasing the radius.")
-        else:
-            st.warning("Insufficient data points. Select a more common crime type.")
 
+                top_h_dist = (
+                    db_plot[
+                        db_plot["_area_id"] == top_h
+                    ]["district"]
+                    .mode()[0]
+                )
+
+                insight(
+                    auto_conclude(
+                        None,
+                        "hotspot",
+                        {
+                            "zone": top_h,
+                            "district": top_h_dist,
+                            "count": int(
+                                area_counts[top_h]
+                            )
+                        }
+                    ),
+                    "red"
+                )
+
+            else:
+
+                st.info(
+                    "No dense areas found with "
+                    "current sensitivity — try "
+                    "increasing the radius."
+                )
+
+        else:
+
+            st.warning(
+                "Insufficient data points. "
+                "Select a more common crime type."
+            )
 # ══════════════════════════════════════════
 #  PAGE 3 — THREAT INTELLIGENCE
 # ══════════════════════════════════════════
